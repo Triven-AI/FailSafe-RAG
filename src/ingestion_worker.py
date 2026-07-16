@@ -2,7 +2,11 @@ import os
 import time
 import json
 import redis
+import requests
+import fitz  # PyMuPDF
 import pymupdf4llm
+import pytesseract
+from PIL import Image
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from fastembed import TextEmbedding
@@ -10,106 +14,173 @@ from fastembed import TextEmbedding
 # ==========================================
 # 1. INFRASTRUCTURE SETUP
 # ==========================================
-# Connect to Redis Message Broker
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-# Initialize Qdrant (Persistent Local Storage)
-# Using a relative path so it works bare-metal or mapped via Docker volumes
 QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
-print(f"Hey, setting up Qdrant at {QDRANT_PATH}...")
+print(f"Initializing Qdrant locally at {QDRANT_PATH}...")
 qdrant = QdrantClient(path=QDRANT_PATH)
+COLLECTION_NAME = "medical_records"
 
-COLLECTION_NAME = "sec_filings"
-
-# Create collection if it doesn't exist
 if not qdrant.collection_exists(COLLECTION_NAME):
     qdrant.create_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(size=384, distance=Distance.COSINE),
     )
 
-# Load FastEmbed Dense Model (Runs locally, $0 API cost)
-print("Loading up the FastEmbed model (BAAI/bge-small-en-v1.5)...")
+print("Loading FastEmbed Dense Model (BAAI/bge-small-en-v1.5)...")
 embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 DOCS_DIR = os.environ.get("DOCS_DIR", "./docs")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 # ==========================================
-# 2. CORE PROCESSING LOGIC
+# 2. THE FORMAT ROUTER & LLM HELPERS
 # ==========================================
-def process_document(filepath):
-    """Parses complex PDFs to clean Markdown and embeds them."""
-    print(f"\n📄 Let's process this document: {filepath}")
+def generate_child_summary(raw_text: str) -> str:
+    """Uses a cheap LLM call to summarize raw, messy text for clean vector search."""
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "meta-llama/llama-3.3-70b-instruct",
+        "messages": [
+            {"role": "system", "content": "You are a medical data summarizer. Extract the core entities, patient stats, and key facts from this text into a clean 2-sentence summary. Do not omit numbers."},
+            {"role": "user", "content": raw_text}
+        ]
+    }
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    return response.json()['choices'][0]['message']['content']
+
+def vision_transcribe_handwriting(image_path: str) -> str:
+    """Uses Llama 3.2 Vision to transcribe terrible doctor handwriting."""
+    import base64
+    with open(image_path, "rb") as img_file:
+        base64_image = base64.b64encode(img_file.read()).decode('utf-8')
+        
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "meta-llama/llama-3.2-90b-vision-instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "You are an expert pharmacist. Transcribe this doctor's handwritten note exactly. Maintain any tabular structure. If a word is completely illegible, output [ILLEGIBLE]."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]
+            }
+        ]
+    }
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    return response.json()['choices'][0]['message']['content']
+
+def determine_document_type(filepath: str) -> str:
+    """Basic Format Router heuristic."""
+    ext = filepath.lower().split('.')[-1]
+    if ext in ['jpg', 'jpeg', 'png']:
+        return "handwriting"
+    elif ext == 'pdf':
+        doc = fitz.open(filepath)
+        page = doc[0]
+        if page.get_text():
+            return "clean_pdf"
+        return "scanned_pdf"
+    return "unknown"
+
+# ==========================================
+# 3. CORE PROCESSING LOGIC (PARENT-CHILD)
+# ==========================================
+def process_document(filepath: str):
+    print(f"\n📄 Routing Document: {filepath}")
+    doc_type = determine_document_type(filepath)
+    raw_text = ""
+
     try:
-        # pymupdf4llm natively preserves data tables as Markdown grids
-        md_text = pymupdf4llm.to_markdown(filepath)
-        
-        # Chunking Strategy
-        # Note: For production, upgrade this to Langchain's MarkdownHeaderTextSplitter
-        chunks = md_text.split("\n\n")
-        
+        if doc_type == "clean_pdf":
+            print("➡️ Route: PyMuPDF4LLM (Preserving Medical Tables)")
+            raw_text = pymupdf4llm.to_markdown(filepath)
+            
+        elif doc_type == "scanned_pdf":
+            print("➡️ Route: Tesseract OCR (Extracting Scanned Text)")
+            # Note: For hackathon simplicity, reading just the first page image
+            doc = fitz.open(filepath)
+            pix = doc[0].get_pixmap()
+            pix.save("temp.png")
+            raw_text = pytesseract.image_to_string(Image.open("temp.png"))
+            os.remove("temp.png")
+            
+        elif doc_type == "handwriting":
+            print("➡️ Route: Vision LLM (Transcribing Handwriting)")
+            raw_text = vision_transcribe_handwriting(filepath)
+            
+        else:
+            print("❌ Error: Unsupported file format.")
+            return False
+
+        # --- PARENT-CHILD EMBEDDING STRATEGY ---
+        print("🧠 Generating Child Summary for Vectorization...")
+        chunks = raw_text.split("\n\n")
         points = []
-        # Generate a unique base ID based on timestamp
-        point_id = int(time.time() * 1000) 
-        
+        point_id = int(time.time() * 1000)
+
         for chunk in chunks:
-            if len(chunk.strip()) > 20: # Ignore tiny artifacts
-                # Generate embedding vector
-                vector = list(embedding_model.embed([chunk]))[0]
+            if len(chunk.strip()) > 30:
+                # 1. Generate the clean summary (The Child)
+                child_summary = generate_child_summary(chunk)
                 
-                # Create Qdrant payload
+                # 2. Embed the summary for high-accuracy search
+                vector = list(embedding_model.embed([child_summary]))[0]
+                
+                # 3. Store the RAW messy text (The Parent) in the payload for the generator
                 points.append(
                     PointStruct(
                         id=point_id,
                         vector=vector.tolist(),
                         payload={
-                            "text": chunk, 
-                            "source": os.path.basename(filepath)
+                            "child_summary": child_summary,
+                            "parent_raw_text": chunk, 
+                            "source": os.path.basename(filepath),
+                            "ingestion_route": doc_type
                         }
                     )
                 )
                 point_id += 1
-        
+
         if points:
             qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
-            print(f"✅ Nice! Got {len(points)} chunks into Qdrant.")
+            print(f"✅ Success: Ingested {len(points)} Parent-Child chunks into Qdrant.")
             return True
-            
+
     except Exception as e:
-        print(f"❌ Oops, something went wrong with {filepath}: {str(e)}")
+        print(f"❌ Error processing {filepath}: {str(e)}")
         return False
 
 # ==========================================
-# 3. BACKGROUND WORKER LOOP
+# 4. BACKGROUND WORKER LOOP
 # ==========================================
 def run_worker():
-    print("\n🛡️ Hey there! Ingestion worker is up and running.")
-    print("Checking for any docs that might be waiting...")
+    print("\n🛡️ AegisAudit (Medical) Ingestion Worker Started.")
     
-    # 1. Initial Scan: Process anything currently sitting in the docs/ folder
     if os.path.exists(DOCS_DIR):
         for filename in os.listdir(DOCS_DIR):
-            if filename.endswith(".pdf"):
-                process_document(os.path.join(DOCS_DIR, filename))
+            file_path = os.path.join(DOCS_DIR, filename)
+            if os.path.isfile(file_path) and not filename.startswith('.'):
+                process_document(file_path)
                 
-    print("\n🎧 All ears on the Redis queue 'ingestion_tasks' for new files...")
-    
-    # 2. Polling Loop: Wait for the UI to tell us a new file arrived
+    print("\n🎧 Listening to Redis queue 'ingestion_tasks' for new files...")
     while True:
-        # blpop blocks the thread until a message arrives (0 = wait forever)
         task = redis_client.blpop("ingestion_tasks", timeout=0)
-        
         if task:
             _, message = task
             data = json.loads(message)
             file_name = data.get("file_name")
-            
             if file_name:
                 file_path = os.path.join(DOCS_DIR, file_name)
                 if os.path.exists(file_path):
                     process_document(file_path)
-                else:
-                    print(f"⚠️ Hey, got a task but {file_path} seems to have vanished from disk.")
 
 if __name__ == "__main__":
     run_worker()
