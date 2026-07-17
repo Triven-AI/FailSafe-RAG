@@ -10,7 +10,7 @@ import operator
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import VectorParams, Distance
+from qdrant_client.http.models import VectorParams, Distance, PointStruct
 from fastembed import TextEmbedding
 
 # ==========================================
@@ -206,7 +206,7 @@ aegis_app = workflow.compile()
 # 5. BACKGROUND WORKER LOOP
 # ==========================================
 def run_worker():
-    print("\n🧠 AegisAudit LangGraph Orchestrator Started.")
+    print("\n🧠 AegisAudit LangGraph Orchestrator Started (Groq Engine Active).")
     print("🎧 Listening to Redis queue 'audit_tasks'...")
     
     while True:
@@ -218,7 +218,32 @@ def run_worker():
             query = data.get("query")
             
             if task_id and query:
-                print(f"\n🚀 Executing Path B Loop for Task: {task_id}")
+                print(f"\n🚀 Processing Task: {task_id}")
+                
+                # ==========================================
+                # THE SEMANTIC CACHE INTERCEPTOR
+                # ==========================================
+                query_vector = list(embedding_model.embed([query]))[0]
+                
+                # Check Qdrant for a 95% semantic match
+                cache_hits = qdrant.search(
+                    collection_name=CACHE_COLLECTION,
+                    query_vector=query_vector.tolist(),
+                    limit=1,
+                    score_threshold=0.95 
+                )
+                
+                if cache_hits:
+                    # CACHE HIT! Bypass the LLM entirely.
+                    fast_answer = cache_hits[0].payload["final_answer"]
+                    publish_update(task_id, "⚡ SEMANTIC CACHE HIT: 95%+ Similarity Found. Bypassing AI generation.")
+                    redis_client.publish(f"audit_updates_{task_id}", json.dumps({"final_result": fast_answer}))
+                    print("✅ Answer served from Cache in < 100ms.")
+                    continue 
+                # ==========================================
+                
+                # If no cache hit, run the full LangGraph Path B loop
+                publish_update(task_id, "🔍 No cache match. Initiating Agentic Loop...")
                 inputs = {
                     "task_id": task_id,
                     "query": query, 
@@ -227,8 +252,22 @@ def run_worker():
                     "status_log": [], 
                     "final_answer": ""
                 }
-                # Execute the graph
-                aegis_app.invoke(inputs)
+                
+                # Execute the Graph
+                final_state = aegis_app.invoke(inputs)
+                
+                # Save the new verified answer to the Semantic Cache for next time!
+                if "SYSTEM WARNING" not in final_state["final_answer"]:
+                    qdrant.upsert(
+                        collection_name=CACHE_COLLECTION,
+                        points=[
+                            PointStruct(
+                                id=int(time.time() * 1000),
+                                vector=query_vector.tolist(),
+                                payload={"query": query, "final_answer": final_state["final_answer"]}
+                            )
+                        ]
+                    )
 
 if __name__ == "__main__":
     run_worker()
