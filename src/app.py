@@ -16,10 +16,10 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 # ==========================================
-# 2. HELPER: THE "DUMB" BASELINE RAG
+# 2. HELPER: THE "DUMB" BASELINE RAG (GROQ)
 # ==========================================
 def run_baseline_rag(query: str) -> str:
     """A standard RAG implementation with NO guardrails. Designed to fail."""
@@ -39,17 +39,17 @@ def run_baseline_rag(query: str) -> str:
         context = "No documents ingested yet."
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "meta-llama/llama-3.3-70b-instruct",
+        "model": "llama-3.3-70b-versatile",
         "messages": [
             {"role": "system", "content": "Answer the query based on the context."},
             {"role": "user", "content": f"Query: {query}\nContext: {context}"}
         ]
     }
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
     return response.json()['choices'][0]['message']['content']
 
 # ==========================================
@@ -71,7 +71,6 @@ with tab_production:
         file_path = os.path.join("./docs", uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        # Ping Redis so the background worker knows a file is ready
         redis_client.rpush("ingestion_tasks", json.dumps({"file_name": uploaded_file.name}))
         st.success(f"File '{uploaded_file.name}' pushed to Ingestion Queue.")
 
@@ -82,22 +81,15 @@ with tab_production:
             st.warning("Please enter a query.")
         else:
             task_id = str(uuid.uuid4())[:8]
-            
-            # Send Task to Orchestrator Worker via Redis
             redis_client.rpush("audit_tasks", json.dumps({"task_id": task_id, "query": query}))
-            
             status_container = st.status("Agentic Routing...", expanded=True)
-            
-            # Subscribe to updates for this specific task
             pubsub = redis_client.pubsub()
             pubsub.subscribe(f"audit_updates_{task_id}")
             
             final_answer = None
-            
-            # Polling Loop to read thoughts from the Orchestrator
             with st.spinner("Processing via LangGraph Path B..."):
                 start_time = time.time()
-                while time.time() - start_time < 60: # 60 second timeout
+                while time.time() - start_time < 60: 
                     message = pubsub.get_message(ignore_subscribe_messages=True)
                     if message:
                         data = json.loads(message['data'])
@@ -134,7 +126,6 @@ with tab_matrix:
     if st.button("Execute Side-by-Side Matrix"):
         col1, col2 = st.columns(2)
         
-        # DUMB RAG
         with col1:
             st.error("🛑 Baseline RAG (Workflow 1)")
             with st.spinner("Standard processing..."):
@@ -144,7 +135,6 @@ with tab_matrix:
                 st.write(f"**Answer:** {baseline_answer}")
                 st.caption(f"Latency: {latency}s | Evaluation: Blind Trust")
                 
-        # AEGISAUDIT CRAG
         with col2:
             st.success("🛡️ AegisAudit CRAG (Workflow 2)")
             task_id = str(uuid.uuid4())[:8]
