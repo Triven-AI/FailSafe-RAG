@@ -14,7 +14,7 @@ from fastembed import TextEmbedding
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
 
 print("Initializing Evaluation Harness...")
@@ -23,7 +23,6 @@ print("Ensure your Docker containers (Redis, Worker, Orchestrator) are running."
 # ==========================================
 # 2. THE 15 GOLDEN TRAP QUESTIONS
 # ==========================================
-# These questions are designed to trigger hallucinations in standard RAG
 TRAP_QUESTIONS = [
     "What is the exact dosage of Lisinopril prescribed in the handwritten note?",
     "Does the patient's surgical history conflict with their reported penicillin allergy?",
@@ -43,7 +42,7 @@ TRAP_QUESTIONS = [
 ]
 
 # ==========================================
-# 3. BASELINE RAG HELPER
+# 3. BASELINE RAG HELPER (GROQ)
 # ==========================================
 def run_baseline(query: str) -> str:
     """Simulates a standard, naive RAG pipeline."""
@@ -57,22 +56,21 @@ def run_baseline(query: str) -> str:
     except Exception:
         context = "No documents found."
 
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": "meta-llama/llama-3.3-70b-instruct",
+        "model": "llama-3.3-70b-versatile",
         "messages": [
             {"role": "system", "content": "Answer the query based on the context provided."},
             {"role": "user", "content": f"Query: {query}\nContext: {context}"}
         ]
     }
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
     return response.json()['choices'][0]['message']['content']
 
 # ==========================================
 # 4. AEGISAUDIT RAG HELPER (VIA REDIS)
 # ==========================================
 def run_aegis(query: str) -> str:
-    """Pushes task to Redis and waits for LangGraph to complete."""
     task_id = str(uuid.uuid4())[:8]
     redis_client.rpush("audit_tasks", json.dumps({"task_id": task_id, "query": query}))
     
@@ -80,7 +78,7 @@ def run_aegis(query: str) -> str:
     pubsub.subscribe(f"audit_updates_{task_id}")
     
     start_time = time.time()
-    while time.time() - start_time < 30: # 30s timeout per question
+    while time.time() - start_time < 30: 
         message = pubsub.get_message(ignore_subscribe_messages=True)
         if message:
             data = json.loads(message['data'])
@@ -102,7 +100,6 @@ def run_evaluation():
         baseline_ans = run_baseline(question)
         aegis_ans = run_aegis(question)
         
-        # Determine if Aegis caught the trap (Outputted a Warning instead of guessing)
         aegis_caught_trap = "SYSTEM WARNING" in aegis_ans
         
         results.append({
@@ -112,9 +109,8 @@ def run_evaluation():
             "trap_caught": aegis_caught_trap
         })
         print(f"   ↳ Trap Caught by Aegis? {'✅ YES' if aegis_caught_trap else '❌ NO'}\n")
-        time.sleep(1) # Prevent API rate limits
+        time.sleep(1) 
 
-    # Save Report
     report = {
         "timestamp": str(datetime.now()),
         "total_questions": len(TRAP_QUESTIONS),
