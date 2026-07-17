@@ -10,6 +10,7 @@ import operator
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from qdrant_client import QdrantClient
+from qdrant_client.http.models import VectorParams, Distance
 from fastembed import TextEmbedding
 
 # ==========================================
@@ -28,13 +29,21 @@ COLLECTION_NAME = "medical_records"
 
 embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
-# OpenRouter Llama 3.3 Gateway (TLS 1.3 Native)
+# The Groq API (Blistering Fast Llama 3.3 70B)
 llm = ChatOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ.get("OPENROUTER_API_KEY"),
-    model="meta-llama/llama-3.3-70b-instruct",
-    temperature=0.0 # Deterministic
+    base_url="https://api.groq.com/openai/v1",
+    api_key=os.environ.get("GROQ_API_KEY"),
+    model="llama-3.3-70b-versatile",
+    temperature=0.0
 )
+
+# --- NEW: Initialize the Semantic Cache Collection ---
+CACHE_COLLECTION = "semantic_cache"
+if not qdrant.collection_exists(CACHE_COLLECTION):
+    qdrant.create_collection(
+        collection_name=CACHE_COLLECTION,
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    )
 
 # ==========================================
 # 2. STATE DEFINITION
