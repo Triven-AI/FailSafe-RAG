@@ -40,8 +40,7 @@ services:
   ui:
     build: .
     container_name: failsafe-rag-ui
-    command: streamlit run src/ui.py --server.address 0.0.0.0 --server.port 8501
-    ports:
+    command: streamlit run src/app.py --server.address 0.0.0.0 --server.port 8501
       - "8501:8501"
     env_file:
       - .env
