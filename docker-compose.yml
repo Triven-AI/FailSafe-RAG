@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # 1. State & Messaging Layer
   redis:
     image: redis:7-alpine
     container_name: failsafe-redis
@@ -11,7 +8,7 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 3
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -20,45 +17,38 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - qdrant_data:/qdrant/storage
+      - qdrant_storage:/qdrant/storage
 
-  # 2. Application Layer
   orchestrator:
-    build: .
     container_name: failsafe-rag-orchestrator
-    command: uvicorn src.orchestrator_worker:app --host 0.0.0.0 --port 8000
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    env_file:
-      - .env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_HOST=redis
     depends_on:
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
+      - qdrant
+      - redis
+    command: uvicorn src.orchestrator_worker:app --host 0.0.0.0 --port 8000
 
   ui:
-    build: .
     container_name: failsafe-rag-ui
-    command: streamlit run src/app.py --server.address 0.0.0.0 --server.port 8501
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
       - "8501:8501"
-    env_file:
-      - .env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_HOST=redis
     depends_on:
       - orchestrator
-
-  # Optional: Ingestion Worker (uncomment if you run ingestion continuously)
-  # ingestion:
-  #   build: .
-  #   container_name: failsafe-rag-ingestion
-  #   command: python src/ingestion.py
-  #   env_file:
-  #     - .env
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
-  #     qdrant:
-  #       condition: service_started
+      - qdrant
+      - redis
+    entrypoint: ["streamlit", "run", "src/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
 
 volumes:
-  qdrant_data:
+  qdrant_storage:

@@ -12,7 +12,25 @@ from langchain_openai import ChatOpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import VectorParams, Distance, PointStruct
 from fastembed import TextEmbedding
+from fastapi import FastAPI, status
+from src.schemas import HealthStatus
 
+# Define the FastAPI app so Uvicorn can find it
+app = FastAPI(title="AegisAudit Orchestrator", version="1.0.0")
+
+@app.get("/healthz", status_code=status.HTTP_200_OK, response_model=HealthStatus)
+def health_check():
+    """Liveness probe for orchestration microservice."""
+    return HealthStatus(
+        status="healthy",
+        service="failsafe-rag-orchestrator",
+        version="1.0.0"
+    )
+
+@app.get("/readyz", status_code=status.HTTP_200_OK)
+def readiness_check():
+    """Readiness probe checking dependencies."""
+    return {"status": "ready"}
 
 logger = get_logger("AegisWorker")
 # ==========================================
@@ -41,13 +59,29 @@ while True:
 
 embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
-# Groq Llama 3.3 70B Engine
+import os
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+
+# Load environment variables explicitly
+load_dotenv()
+
+# Safely fetch API key from either Groq or OpenAI keys
+api_key = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
+base_url = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
+model_name = os.getenv("MODEL_NAME", "llama3-70b-8192")
+
+if not api_key:
+    raise ValueError(
+        "❌ Critical Error: Neither GROQ_API_KEY nor OPENAI_API_KEY was found in your environment variables or .env file!"
+    )
+
+# Initialize the LLM safely using OpenAI-compatible Groq endpoint
 llm = ChatOpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=os.environ.get("GROQ_API_KEY"),
-    model="llama-3.3-70b-versatile",
-    temperature=0.0,
-    max_retries=1  # THE FIX: Prevents LangChain from freezing the UI for 60 seconds on rate limits
+    model=model_name,
+    openai_api_key=api_key,
+    base_url=base_url,
+    temperature=0.0
 )
 
 # Initialize Cache Collection

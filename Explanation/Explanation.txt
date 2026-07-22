@@ -1,0 +1,47 @@
+The AegisAudit
+
+🌟 The Core Difference: Standard RAG vs. AegisAudit
+
+How Standard RAG Works (The Problem):
+Standard AI is a "people pleaser." It blindly searches a database, grabs whatever text seems relevant, hands it to the AI, and says, "Answer the user no matter what." In a call center, if the context is missing or ambiguous, the AI will hallucinate an answer to make the customer happy. In the enterprise, a hallucination is a legal liability.
+
+How AegisAudit Works (Our Model):
+We do not use standard chains; we built a LangGraph State Machine. Our AI is not allowed to speak until the data passes through three distinct layers of auditing, scoring, and filtering. We treat AI like an untrusted employee. If our system isn't 85% mathematically confident in the legal context, it physically cuts the AI off and falls back to a safe human script.
+
+🧠 Node-by-Node Breakdown (Simple Terms)
+
+1. Semantic Cache (The Bouncer)
+
+How it works: It uses vector math to check if the exact meaning of the caller's question has already been answered and approved recently.
+
+"Before we spend money on expensive API calls, our Semantic Cache checks if we've seen this intent before. If yes, it returns the verified answer in under 100 milliseconds. We cut latency and API costs for repeat queries to zero."
+
+2. Parent-Child Retrieval (The Zoom Lens)
+
+How it works: Standard databases chop contracts into random 500-word blocks. If it finds the word "penalty" in block B, it might miss the rule that says "Except in winter" located in block A. Our database searches tiny "child" sentences to find the exact match, but then pulls the massive "parent" document so no context is lost.
+
+"We built Parent-Child Retrieval. We search for the exact needle, but we pull the entire haystack. The AI always has the complete legal boundary before it makes a decision."
+
+3. Deterministic Code Gates (The Metal Detector)
+
+How it works: This is pure Python, not AI. We run the retrieved document through hardcoded Regex and heuristic rules. If a contract is marked "EXPIRED" or is missing a mandatory signature flag, this code instantly deletes it from the AI's memory.
+
+"We don't trust AI to enforce hard business rules. Before the AI even sees the context, it passes through Deterministic Code Gates. If the data violates our hardcoded compliance rules, it is dropped instantly. Code beats hallucination."
+
+4. LLM Grounding Critic (The Internal Auditor)
+
+How it works: We use a separate LLM prompt that is not allowed to talk to the user. Its only job is to look at the retrieved document and the user's question, and mathematically grade (from 0.0 to 1.0) whether the document contains enough facts to answer the question safely.
+
+"We segregate duties. The AI writing the answer is not allowed to grade its own exam. We built an autonomous LLM Critic that mathematically scores the factuality of the data. If the score is below 85%, the system halts."
+
+5. Corrective RAG / CRAG (The Self-Healer)
+
+How it works: If the Critic gives a failing score (e.g., the user asked for "D. PLC" instead of "Duncan PLC"), the system doesn't just fail. A CRAG node intercepts the failure, uses AI to fix and expand the user's search terms, and searches the database a second time.
+
+"When a search fails, standard bots give a dumb 'I don't know' response. We built Corrective RAG. Our system autonomously rewrites ambiguous user queries and self-heals by trying a secondary targeted search."
+
+6. The Circuit Breaker (The Ultimate Fail-Safe)
+
+How it works: If the system fails twice, the state machine routes directly to the Circuit Breaker. It bypasses the generation AI completely and outputs a pre-written, hardcoded Text-to-Speech (TTS) string.
+
+"This is our competitive moat. If the AI cannot absolutely verify the answer, it trips a Circuit Breaker. The generative AI is silenced, and a hardcoded, legally approved TTS script takes over—'I cannot verify that SLA, let me transfer you.' We reduce corporate liability to absolute zero."

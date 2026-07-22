@@ -52,3 +52,12 @@ Create a `.env` file in the root directory:
 GROQ_API_KEY=your_groq_api_key_here
 QDRANT_URL=http://qdrant_server:6333
 REDIS_URL=redis://redis:6379/0
+
+## 🚀 How to Run the Working Demo Locally
+
+This is a production-ready microservices architecture. To run it locally:
+
+1. Clone the repository: `git clone https://github.com/Triven-AI/FailSafe-RAG.git`
+2. Add your Groq API key to a `.env` file: `GROQ_API_KEY=your_key_here`
+3. Spin up the cluster: `docker-compose up --build`
+4. Access the UI at: `http://localhost:8501`
