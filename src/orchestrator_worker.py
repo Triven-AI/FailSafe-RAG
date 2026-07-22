@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import TypedDict, List, Annotated
 import operator
-
+from src.logger import get_logger
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from qdrant_client import QdrantClient
@@ -26,15 +26,15 @@ QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant_server:6333")
 COLLECTION_NAME = "enterprise_records"
 CACHE_COLLECTION = "semantic_cache"
 
-print(f"Connecting to Qdrant at {QDRANT_URL}...")
+logger.info(f"Connecting to Qdrant at {QDRANT_URL}...")
 while True:
     try:
         qdrant = QdrantClient(url=QDRANT_URL)
         qdrant.get_collections()
-        print("✅ Connected to Qdrant Server!")
+        logger.info("✅ Connected to Qdrant Server!")
         break
     except Exception:
-        print("⏳ Waiting for Qdrant Server...")
+        logger.info("⏳ Waiting for Qdrant Server...")
         time.sleep(2)
 
 embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
@@ -69,7 +69,7 @@ class GraphState(TypedDict):
 
 def publish_update(task_id: str, message: str):
     redis_client.publish(f"audit_updates_{task_id}", json.dumps({"status": message}))
-    print(f"[{task_id}] {message}")
+    logger.info(f"[{task_id}] {message}")
 
 # ==========================================
 # 3. LANGGRAPH NODES
@@ -232,8 +232,8 @@ aegis_app = workflow.compile()
 # 5. BACKGROUND WORKER LOOP
 # ==========================================
 def run_worker():
-    print("\n🧠 Voice-Guard LangGraph Orchestrator Active.")
-    print("🎧 Listening to Redis queue 'audit_tasks'...")
+    logger.info("\n🧠 Voice-Guard LangGraph Orchestrator Active.")
+    logger.info("🎧 Listening to Redis queue 'audit_tasks'...")
     
     while True:
         task = redis_client.blpop("audit_tasks", timeout=1)
@@ -244,7 +244,7 @@ def run_worker():
             query = data.get("query")
             
             if task_id and query:
-                print(f"\n🚀 Processing Task: {task_id}")
+                logger.info(f"\n🚀 Processing Task: {task_id}")
                 
                # Semantic Cache Interceptor
                 query_vector = list(embedding_model.embed([query]))[0]
@@ -285,6 +285,56 @@ def run_worker():
                             )
                         ]
                     )
+
+def rewrite_query_node(state: dict) -> dict:
+    """
+    CRAG Node: Rewrites ambiguous or low-confidence user queries 
+    to optimize vector database retrieval on retry.
+    """
+    logger.info("🔄 [CRAG] Triggering Query Rewriter Node...")
+    original_query = state.get("query", "")
+    attempt = state.get("attempt", 1)
+    
+    # Prompt LLM to expand/disambiguate query keywords
+    prompt = (
+        f"You are a search query optimizer for enterprise SLA contracts.\n"
+        f"Original User Query: '{original_query}'\n"
+        f"The previous search yielded low-confidence or missing context.\n"
+        f"Rewrite this query into a concise, keyword-rich search phrase focusing on core legal terms, SLA penalties, or contract overrides."
+    )
+    
+    try:
+        # Call your existing LLM client (Groq)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+        rewritten_query = response.choices[0].message.content.strip()
+        logger.info(f"✨ [CRAG] Query Rewritten: '{rewritten_query}'")
+    except Exception as e:
+        logger.error(f"Failed to rewrite query: {e}")
+        rewritten_query = original_query
+
+    return {
+        **state,
+        "query": rewritten_query,
+        "attempt": attempt + 1,
+        "crag_triggered": True
+    }
+
+def route_after_critic(state: dict) -> str:
+    confidence = state.get("confidence", 0.0)
+    attempt = state.get("attempt", 1)
+    
+    if confidence >= 0.85:
+        return "generate_safe_output"
+    elif attempt == 1:
+        # First failure: Trigger CRAG query re-writer instead of instantly quitting
+        return "rewrite_query"
+    else:
+        # Second failure: Trip the Circuit Breaker
+        return "trip_circuit_breaker"
 
 if __name__ == "__main__":
     run_worker()

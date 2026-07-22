@@ -9,3 +9,4 @@ requests
 pymupdf4llm
 pytesseract
 Pillow
+logger

@@ -19,15 +19,15 @@ redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant_server:6333")
 
-print(f"Connecting to Qdrant at {QDRANT_URL}...")
+logger.info(f"Connecting to Qdrant at {QDRANT_URL}...")
 while True:
     try:
         qdrant = QdrantClient(url=QDRANT_URL)
         qdrant.get_collections()
-        print("✅ Successfully connected to Qdrant Server!")
+        logger.info("✅ Successfully connected to Qdrant Server!")
         break
     except Exception:
-        print("⏳ Qdrant database starting up, retrying in 2 seconds...")
+        logger.info("⏳ Qdrant database starting up, retrying in 2 seconds...")
         time.sleep(2)
 
 COLLECTION_NAME = "enterprise_records"
@@ -38,7 +38,7 @@ if not qdrant.collection_exists(COLLECTION_NAME):
         vectors_config=VectorParams(size=384, distance=Distance.COSINE),
     )
 
-print("Loading FastEmbed Dense Model...")
+logger.info("Loading FastEmbed Dense Model...")
 embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 DOCS_DIR = os.environ.get("DOCS_DIR", "./docs")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -64,10 +64,10 @@ def make_groq_request_with_retry(payload: dict, max_retries: int = 5) -> dict:
         # Check if rate limited
         if 'error' in resp_json and resp_json['error'].get('code') == 'rate_limit_exceeded':
             wait_time = (attempt + 1) * 5  # 5s, 10s, 15s...
-            print(f"  ⏳ Groq Rate Limit hit. Pausing {wait_time}s before retry (Attempt {attempt + 1}/{max_retries})...")
+            logger.info(f"  ⏳ Groq Rate Limit hit. Pausing {wait_time}s before retry (Attempt {attempt + 1}/{max_retries})...")
             time.sleep(wait_time)
         else:
-            print(f"  ⚠️ Groq API Error: {resp_json}")
+            logger.info(f"  ⚠️ Groq API Error: {resp_json}")
             time.sleep(3)
             
     raise Exception("Max retries exceeded for Groq API call.")
@@ -134,17 +134,17 @@ def determine_document_type(filepath: str) -> str:
 # 3. CORE PROCESSING LOGIC (PARENT-CHILD)
 # ==========================================
 def process_document(filepath: str):
-    print(f"\n📄 Routing Document: {filepath}")
+    logger.info(f"\n📄 Routing Document: {filepath}")
     doc_type = determine_document_type(filepath)
     raw_text = ""
 
     try:
         if doc_type == "clean_contract":
-            print("➡️ Route: PyMuPDF4LLM (Preserving SLA Tables)")
+            logger.info("➡️ Route: PyMuPDF4LLM (Preserving SLA Tables)")
             raw_text = pymupdf4llm.to_markdown(filepath)
             
         elif doc_type == "scanned_pdf":
-            print("➡️ Route: Tesseract OCR (Extracting Scanned Text)")
+            logger.info("➡️ Route: Tesseract OCR (Extracting Scanned Text)")
             doc = fitz.open(filepath)
             pix = doc[0].get_pixmap()
             pix.save("temp.png")
@@ -152,14 +152,14 @@ def process_document(filepath: str):
             if os.path.exists("temp.png"): os.remove("temp.png")
             
         elif doc_type == "vision_scan":
-            print("➡️ Route: Vision LLM (Invoices & Overrides)")
+            logger.info("➡️ Route: Vision LLM (Invoices & Overrides)")
             raw_text = vision_transcribe_handwriting(filepath)
             
         else:
-            print("❌ Error: Unsupported file format.")
+            logger.info("❌ Error: Unsupported file format.")
             return False
 
-        print("🧠 Generating Child Summary for Vectorization...")
+        logger.info("🧠 Generating Child Summary for Vectorization...")
         chunks = raw_text.split("\n\n")
         points = []
         point_id = int(time.time() * 1000)
@@ -186,18 +186,18 @@ def process_document(filepath: str):
 
         if points:
             qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
-            print(f"✅ Success: Ingested {len(points)} Parent-Child chunks into Qdrant.")
+            logger.info(f"✅ Success: Ingested {len(points)} Parent-Child chunks into Qdrant.")
             return True
 
     except Exception as e:
-        print(f"❌ Error processing {filepath}: {str(e)}")
+        logger.info(f"❌ Error processing {filepath}: {str(e)}")
         return False
 
 # ==========================================
 # 4. BACKGROUND WORKER LOOP
 # ==========================================
 def run_worker():
-    print("\n🛡️ AegisAudit (Enterprise) Ingestion Worker Started.")
+    logger.info("\n🛡️ AegisAudit (Enterprise) Ingestion Worker Started.")
     
     if os.path.exists(DOCS_DIR):
         for filename in os.listdir(DOCS_DIR):
@@ -206,7 +206,7 @@ def run_worker():
                 process_document(file_path)
                 time.sleep(2)  # 2s cooldown between files to respect 8k TPM limit
                 
-    print("\n🎧 Listening to Redis queue 'ingestion_tasks' for new files...")
+    logger.info("\n🎧 Listening to Redis queue 'ingestion_tasks' for new files...")
     while True:
         task = redis_client.blpop("ingestion_tasks", timeout=1)
         if task:

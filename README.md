@@ -1,41 +1,54 @@
-# 🛡️ AegisAudit VoiceGuard: OneInbox Enterprise AI Integration
+# 🛡️ AegisAudit VoiceGuard: Enterprise AI Circuit Breaker
 
-> **The Circuit Breaker for Enterprise Voice AI.** Stop conversational agents from hallucinating high-liability SLA penalties, billing data, and manager overrides mid-call.
+> **The Fail-Safe Guardrail for Enterprise Voice AI.** Intercept and mitigate high-liability LLM hallucinations—such as unverified SLA penalties, unauthorized manager overrides, and inaccurate billing data—mid-call before they reach the caller.
 
 ---
 
-## 🚨 The Problem
-In enterprise BPO and customer support, a standard Retrieval-Augmented Generation (RAG) agent suffers from **blind trust**. When pressured by a caller about an SLA penalty, refund policy, or contract override, standard LLMs will confidently hallucinate an answer. In enterprise contexts, a single hallucination translates directly to regulatory non-compliance, unauthorized payouts, and thousand-dollar legal liabilities.
+## 🚨 The Enterprise Risk
+
+In call center environments (BPO and Enterprise Support), standard Retrieval-Augmented Generation (RAG) agents operate under **blind trust**. When subjected to adversarial prompting or missing documentation:
+* **Standard RAG** hallucinated answers under pressure, generating legal and financial liabilities (e.g., promising non-existent refunds or incorrect SLA payout rates).
+* **Compliance Failure:** A single unverified AI commitment can translate directly to regulatory penalties, unauthorized payouts, and legal breach of contract.
+
+---
 
 ## 💡 The Solution: AegisAudit VoiceGuard
-**AegisAudit VoiceGuard** is a self-correcting, state-machine-driven architecture built with **LangGraph, Qdrant, and Redis**. Instead of blindly generating responses, it treats generation as a high-stakes transaction requiring strict validation:
-1. **Parent-Child Vector Retrieval:** Splits massive, messy enterprise documents (scans, handwritten overrides, legacy SLAs) into dense child vectors for matching while preserving the full parent context for grounding.
-2. **Deterministic Code Gates & LLM Critics:** Evaluates retrieved chunks against strict contextual heuristics before letting an agent speak.
-3. **Automatic Circuit Breaking & TTS Fallbacks:** If data is ambiguous, contradictory, or missing, the system instantly trips the circuit breaker and outputs a pre-formatted, human-ready **Text-to-Speech (TTS) safety script**.
-4. **Semantic Caching:** Delivers sub-100ms responses for repeated queries to ensure low latency in live voice environments.
+
+**AegisAudit VoiceGuard** introduces a state-machine-driven, self-correcting validation architecture powered by **LangGraph, Qdrant, and Redis**. Instead of outputting unverified text, VoiceGuard treats every model execution as a high-stakes transaction requiring deterministic verification:
+
+| Feature | Execution Mechanism | Business Impact |
+| :--- | :--- | :--- |
+| **Parent-Child Retrieval** | Dense child matching linked to full parent context | Preserves full legal context while maintaining high match precision |
+| **Deterministic Code Gates** | Regex heuristics + Contextual boundary checks | Instantly drops contextually irrelevant or risky document chunks |
+| **LLM Grounding Critics** | Adversarial validation nodes evaluating factuality | Blocks ungrounded claims before text-to-speech generation |
+| **Circuit Breaker Engine** | Deterministic fallback triggering standard TTS scripts | Guarantees 0% liability when data is ambiguous, missing, or contradictory |
+| **Sub-100ms Semantic Cache** | Vector-similarity caching in Qdrant | Delivers instantaneous responses for repeated high-frequency queries |
 
 ---
 
-## 🏗️ System Architecture & Microservices
+## 🏗️ Microservice Architecture
 
-Our architecture is fully containerized and decoupled into independent microservices:
-* **`failsafe-rag-ui` (Streamlit):** The real-time call center copilot and **Adversarial Call Matrix** dashboard for live auditing.
-* **`failsafe-rag-orchestrator` (LangGraph & FastAPI):** The deterministic state machine managing the audit loop, critic nodes, and circuit breaking.
-* **`failsafe-rag-ingestion` (Redis & Python Workers):** Asynchronous document routing supporting clean contracts, OCR tesseract, and vision-based document processing.
-* **`qdrant_server`:** High-performance vector database storing parent-child chunks and semantic cache entries.
-* **`redis`:** Message broker managing asynchronous task queues and pub/sub live status updates.
+AegisAudit is built as a fully containerized, microservices-based application:
+
+* **`failsafe-rag-ui` (Streamlit):** Real-time operator copilot and **Adversarial Call Matrix** for live audit monitoring.
+* **`failsafe-rag-orchestrator` (LangGraph & FastAPI):** The deterministic state machine managing query flow, critic evaluation, and circuit breaking.
+* **`failsafe-rag-ingestion` (Redis Workers & Python):** Asynchronous document worker supporting PDF parsing, OCR tesseract, and vision-based document processing.
+* **`qdrant_server`:** Vector database managing parent-child embeddings and semantic cache entries.
+* **`redis`:** Message broker managing pub/sub updates and asynchronous task execution queues.
 
 ---
 
 ## 🚀 Quickstart & Installation
 
-You can spin up the entire production-grade multi-container stack with a single command:
+Deploy the complete multi-container environment locally using Docker Compose.
 
 ### Prerequisites
-* Docker & Docker Compose installed.
-* A Groq API Key (`GROQ_API_KEY`).
+* [Docker Desktop](https://www.docker.com/) & Docker Compose installed.
+* A valid [Groq API Key](https://console.groq.com/).
 
-### 1. Configure Environment
+### 1. Environment Setup
 Create a `.env` file in the root directory:
 ```env
 GROQ_API_KEY=your_groq_api_key_here
+QDRANT_URL=http://qdrant_server:6333
+REDIS_URL=redis://redis:6379/0

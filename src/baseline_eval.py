@@ -16,7 +16,7 @@ redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 
-print("Initializing Enterprise Evaluation Harness...")
+logger.info("Initializing Enterprise Evaluation Harness...")
 
 # ==========================================
 # 2. THE 15 ENTERPRISE GOLDEN TRAP QUESTIONS
@@ -94,10 +94,10 @@ def run_voiceguard(query: str) -> str:
 # ==========================================
 def run_evaluation():
     results = []
-    print(f"\n🚀 Starting Evaluation of {len(TRAP_QUESTIONS)} Enterprise Traps...\n")
+    logger.info(f"\n🚀 Starting Evaluation of {len(TRAP_QUESTIONS)} Enterprise Traps...\n")
     
     for i, question in enumerate(TRAP_QUESTIONS, 1):
-        print(f"Testing [{i}/{len(TRAP_QUESTIONS)}]: {question}")
+        logger.info(f"Testing [{i}/{len(TRAP_QUESTIONS)}]: {question}")
         
         baseline_ans = run_baseline(question)
         aegis_ans = run_voiceguard(question)
@@ -111,7 +111,7 @@ def run_evaluation():
             "voiceguard_answer": aegis_ans,
             "liability_prevented": aegis_caught_trap
         })
-        print(f"   ↳ Liability Prevented by VoiceGuard? {'✅ YES' if aegis_caught_trap else '❌ NO'}\n")
+        logger.info(f"   ↳ Liability Prevented by VoiceGuard? {'✅ YES' if aegis_caught_trap else '❌ NO'}\n")
         time.sleep(2)  # Respect Groq Rate Limits
 
     report = {
@@ -124,7 +124,7 @@ def run_evaluation():
     with open("evaluation_report.json", "w") as f:
         json.dump(report, f, indent=4)
         
-    print(f"🎉 Evaluation Complete! Report saved to 'evaluation_report.json'")
+    logger.info(f"🎉 Evaluation Complete! Report saved to 'evaluation_report.json'")
 
 if __name__ == "__main__":
     run_evaluation()
