@@ -13,6 +13,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import VectorParams, Distance, PointStruct
 from fastembed import TextEmbedding
 
+
+logger = get_logger("AegisWorker")
 # ==========================================
 # 1. INFRASTRUCTURE & TELEMETRY SETUP
 # ==========================================

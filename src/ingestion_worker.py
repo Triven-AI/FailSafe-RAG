@@ -10,7 +10,8 @@ from PIL import Image
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from fastembed import TextEmbedding
-
+from src.logger import get_logger
+logger = get_logger("AegisWorker")
 # ==========================================
 # 1. INFRASTRUCTURE SETUP
 # ==========================================
