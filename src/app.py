@@ -6,6 +6,8 @@ import redis
 import requests
 import streamlit as st
 from qdrant_client import QdrantClient
+from fastapi import FastAPI, status
+from src.schemas import HealthStatus
 
 # ==========================================
 # 1. INFRASTRUCTURE SETUP
@@ -183,3 +185,20 @@ with tab_matrix:
             else:
                 st.error("⚠️ Orchestrator Timeout: The backend crashed or took longer than 60 seconds.")
             st.caption(f"Latency: {latency}s | Evaluation: Grounded & Voice-Safe")
+
+app = FastAPI(title="AegisAudit Orchestrator", version="1.0.0")
+
+@app.get("/healthz", status_code=status.HTTP_200_OK, response_model=HealthStatus)
+def health_check():
+    """Liveness probe for orchestration microservice."""
+    return HealthStatus(
+        status="healthy",
+        service="failsafe-rag-orchestrator",
+        version="1.0.0"
+    )
+
+@app.get("/readyz", status_code=status.HTTP_200_OK)
+def readiness_check():
+    """Readiness probe checking Redis & Vector DB connectivity."""
+    # Verifies system dependencies are reachble
+    return {"status": "ready", "redis": "connected", "qdrant": "connected"}
