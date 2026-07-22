@@ -15,8 +15,8 @@ st.set_page_config(page_title="AegisAudit Medical", layout="wide", page_icon="�
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+qdrant = QdrantClient(url=QDRANT_URL)
 
 # ==========================================
 # 2. HELPER: THE "DUMB" BASELINE RAG (GROQ)
@@ -25,7 +25,7 @@ def run_baseline_rag(query: str) -> str:
     """A standard RAG implementation with NO guardrails. Designed to fail."""
     from fastembed import TextEmbedding
     embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-    qdrant = QdrantClient(path=QDRANT_PATH)
+    qdrant = QdrantClient(url=QDRANT_URL)
     
     try:
         query_vector = list(embedding_model.embed([query]))[0]
@@ -55,26 +55,25 @@ def run_baseline_rag(query: str) -> str:
 # ==========================================
 # 3. UI LAYOUT & TABS
 # ==========================================
-st.title("🛡️ AegisAudit: Medical Copilot")
+st.title("🛡️ FailSafe-RAG: Voice AI Knowledge Guard")
 
-tab_production, tab_matrix = st.tabs(["Production Interface", "Adversarial Matrix (Stress Test)"])
+tab_production, tab_matrix = st.tabs(["Call Center Copilot", "Adversarial Matrix (Stress Test)"])
 
 # ------------------------------------------
 # TAB 1: PRODUCTION INTERFACE
 # ------------------------------------------
 with tab_production:
-    st.markdown("Execute compliant, zero-hallucination queries against patient records.")
+    st.markdown("Ensure Voice Agents never hallucinate refund policies or SLA terms mid-conversation.")
     
-    # File Uploader (Sends ping to Ingestion Worker)
-    uploaded_file = st.file_uploader("Upload Patient File (PDF, Scanned, or Handwritten)", type=["pdf", "png", "jpg"])
+    uploaded_file = st.file_uploader("Upload Messy Knowledge Base (Scanned Policies, Handwritten Notes)", type=["pdf", "png", "jpg"])
     if uploaded_file is not None:
         file_path = os.path.join("./docs", uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         redis_client.rpush("ingestion_tasks", json.dumps({"file_name": uploaded_file.name}))
-        st.success(f"File '{uploaded_file.name}' pushed to Ingestion Queue.")
+        st.success(f"File '{uploaded_file.name}' pushed to Vision/OCR Ingestion Queue.")
 
-    query = st.text_input("Enter Medical Query:")
+    query = st.text_input("Enter Voice Agent Context Query:")
     
     if st.button("Execute Safe Audit"):
         if not query:
@@ -115,19 +114,19 @@ with tab_production:
 # ------------------------------------------
 with tab_matrix:
     st.markdown("### Real-Time Architecture Evaluation")
-    st.write("Comparing standard RAG (Workflow 1) vs. AegisAudit State Machine (Workflow 2)")
+    st.write("Comparing standard RAG (Blind Trust) vs. FailSafe-RAG State Machine (Self-Correcting)")
     
     trap_question = st.selectbox("Select a Golden Trap Question:", [
-        "What is the exact dosage of the medication prescribed on the handwritten note?",
-        "Does the patient's surgical history conflict with their reported allergies?",
-        "According to the blood work table, what is the exact White Blood Cell (WBC) count?"
+        "According to the handwritten manager's note, is the customer eligible for a full refund after 45 days?",
+        "Does the updated SLA policy contradict the legacy downtime guarantees in the scanned table?",
+        "What is the exact penalty fee listed on the illegible customer invoice?"
     ])
     
     if st.button("Execute Side-by-Side Matrix"):
         col1, col2 = st.columns(2)
         
         with col1:
-            st.error("🛑 Baseline RAG (Workflow 1)")
+            st.error("🛑 Baseline RAG")
             with st.spinner("Standard processing..."):
                 start_time = time.time()
                 baseline_answer = run_baseline_rag(trap_question)
@@ -136,7 +135,7 @@ with tab_matrix:
                 st.caption(f"Latency: {latency}s | Evaluation: Blind Trust")
                 
         with col2:
-            st.success("🛡️ AegisAudit CRAG (Workflow 2)")
+            st.success("🛡️ FailSafe-RAG")
             task_id = str(uuid.uuid4())[:8]
             redis_client.rpush("audit_tasks", json.dumps({"task_id": task_id, "query": trap_question}))
             

@@ -23,9 +23,20 @@ os.environ["LANGCHAIN_PROJECT"] = "AegisAudit-Medical"
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
-qdrant = QdrantClient(path=QDRANT_PATH)
-COLLECTION_NAME = "medical_records"
+# Look for Qdrant across the Docker network, not localhost
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant_server:6333")
+
+print(f"Connecting to Qdrant at {QDRANT_URL}...")
+while True:
+    try:
+        qdrant = QdrantClient(url=QDRANT_URL)
+        # Actually ping the database to force a connection test
+        qdrant.get_collections()
+        print("✅ Successfully connected to Qdrant Server!")
+        break
+    except Exception as e:
+        print("⏳ Qdrant database starting up, retrying in 2 seconds...")
+        time.sleep(2)
 
 embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
@@ -137,7 +148,19 @@ def generate_answer(state: GraphState):
 def circuit_breaker(state: GraphState):
     log = "Circuit Breaker Tripped: Halting autonomous loops to prevent hallucination."
     publish_update(state["task_id"], log)
-    return {"final_answer": "SYSTEM WARNING: Insufficient or contradictory medical data found. Traceability mandate failed.", "status_log": [log]}
+    
+    # NEW: Generate a clarifying question instead of just failing
+    prompt = f"""
+    The user asked: '{state['query']}'. 
+    However, our retrieved medical context is insufficient or contradictory. 
+    Generate a polite, 1-sentence clarifying question asking the user for a specific detail 
+    (e.g., date of visit, specific doctor's name, or clarifying a dosage) to help us search better.
+    """
+    clarifying_q = llm.invoke(prompt).content.strip()
+    
+    final_message = f"🛑 **SYSTEM WARNING:** Insufficient or contradictory medical data found. Traceability mandate failed.\n\n**Next Step:** {clarifying_q}"
+    
+    return {"final_answer": final_message, "status_log": [log]}
 
 def export_audit_trail(state: GraphState):
     os.makedirs("audit_logs", exist_ok=True)
@@ -210,7 +233,7 @@ def run_worker():
     print("🎧 Listening to Redis queue 'audit_tasks'...")
     
     while True:
-        task = redis_client.blpop("audit_tasks", timeout=0)
+        task = redis_client.blpop("audit_tasks", timeout=1)
         if task:
             _, message = task
             data = json.loads(message)

@@ -17,9 +17,22 @@ from fastembed import TextEmbedding
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
-print(f"Initializing Qdrant locally at {QDRANT_PATH}...")
-qdrant = QdrantClient(path=QDRANT_PATH)
+# Look for Qdrant across the Docker network, not localhost
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant_server:6333")
+
+print(f"Connecting to Qdrant at {QDRANT_URL}...")
+while True:
+    try:
+        qdrant = QdrantClient(url=QDRANT_URL)
+        # Actually ping the database to force a connection test
+        qdrant.get_collections()
+        print("✅ Successfully connected to Qdrant Server!")
+        break
+    except Exception as e:
+        print("⏳ Qdrant database starting up, retrying in 2 seconds...")
+        time.sleep(2)
+
+
 COLLECTION_NAME = "medical_records"
 
 if not qdrant.collection_exists(COLLECTION_NAME):
@@ -36,45 +49,47 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 # ==========================================
 # 2. THE FORMAT ROUTER & LLM HELPERS
 # ==========================================
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
 def generate_child_summary(raw_text: str) -> str:
-    """Uses a cheap LLM call to summarize raw, messy text for clean vector search."""
+    """Uses Groq to summarize raw, messy text for clean vector search."""
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "meta-llama/llama-3.3-70b-instruct",
+        "model": "llama-3.3-70b-versatile",
         "messages": [
-            {"role": "system", "content": "You are a medical data summarizer. Extract the core entities, patient stats, and key facts from this text into a clean 2-sentence summary. Do not omit numbers."},
+            {"role": "system", "content": "You are a data summarizer. Extract the core entities and key facts from this text into a clean 2-sentence summary. Do not omit numbers."},
             {"role": "user", "content": raw_text}
         ]
     }
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
     return response.json()['choices'][0]['message']['content']
 
 def vision_transcribe_handwriting(image_path: str) -> str:
-    """Uses Llama 3.2 Vision to transcribe terrible doctor handwriting."""
+    """Uses Groq's Llama 3.2 Vision to transcribe terrible handwriting."""
     import base64
     with open(image_path, "rb") as img_file:
         base64_image = base64.b64encode(img_file.read()).decode('utf-8')
         
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "meta-llama/llama-3.2-90b-vision-instruct",
+        "model": "llama-3.2-90b-vision-preview",
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "You are an expert pharmacist. Transcribe this doctor's handwritten note exactly. Maintain any tabular structure. If a word is completely illegible, output [ILLEGIBLE]."},
+                    {"type": "text", "text": "Transcribe this handwritten note exactly. Maintain any tabular structure. If a word is completely illegible, output [ILLEGIBLE]."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                 ]
             }
         ]
     }
-    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
     return response.json()['choices'][0]['message']['content']
 
 def determine_document_type(filepath: str) -> str:
@@ -172,7 +187,7 @@ def run_worker():
                 
     print("\n🎧 Listening to Redis queue 'ingestion_tasks' for new files...")
     while True:
-        task = redis_client.blpop("ingestion_tasks", timeout=0)
+        task = redis_client.blpop("ingestion_tasks", timeout=1)
         if task:
             _, message = task
             data = json.loads(message)

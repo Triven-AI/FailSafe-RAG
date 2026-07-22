@@ -1,0 +1,11 @@
+streamlit
+redis
+langgraph
+langchain-openai
+langchain-core
+fastembed
+qdrant-client
+requests
+pymupdf4llm
+pytesseract
+Pillow
