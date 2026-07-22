@@ -1,17 +1,10 @@
-services:
-  # 1. Qdrant Vector Database Server
-  qdrant_server:
-    image: qdrant/qdrant:latest
-    container_name: aegis_qdrant
-    ports:
-      - "6333:6333"
-    volumes:
-      - ./qdrant_storage:/qdrant/storage
+version: '3.8'
 
-  # 2. Redis Message Broker
+services:
+  # 1. State & Messaging Layer
   redis:
     image: redis:7-alpine
-    container_name: aegis_redis
+    container_name: failsafe-redis
     ports:
       - "6379:6379"
     healthcheck:
@@ -20,49 +13,53 @@ services:
       timeout: 3s
       retries: 5
 
-  # 3. Streamlit UI
-  ui:
-    build: .
-    container_name: aegis_ui
-    command: streamlit run src/app.py --server.port=8501 --server.address=0.0.0.0
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: failsafe-qdrant
     ports:
-      - "8501:8501"
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - QDRANT_URL=http://qdrant_server:6333
+      - "6333:6333"
+      - "6334:6334"
     volumes:
-      - .:/app
-    depends_on:
-      redis:
-        condition: service_healthy
+      - qdrant_data:/qdrant/storage
 
-  # 4. LangGraph Orchestrator Worker
+  # 2. Application Layer
   orchestrator:
     build: .
-    container_name: aegis_orchestrator
-    command: python -m src.orchestrator_worker
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - QDRANT_URL=http://qdrant_server:6333
-    volumes:
-      - .:/app
+    container_name: failsafe-rag-orchestrator
+    command: uvicorn src.orchestrator_worker:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
     depends_on:
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_started
 
-  # 5. Ingestion Worker
-  ingestion:
+  ui:
     build: .
-    container_name: aegis_ingestion
-    command: python -m src.ingestion_worker
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - QDRANT_URL=http://qdrant_server:6333
-    volumes:
-      - .:/app
+    container_name: failsafe-rag-ui
+    command: streamlit run src/ui.py --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
     depends_on:
-      redis:
-        condition: service_healthy
+      - orchestrator
+
+  # Optional: Ingestion Worker (uncomment if you run ingestion continuously)
+  # ingestion:
+  #   build: .
+  #   container_name: failsafe-rag-ingestion
+  #   command: python src/ingestion.py
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #     qdrant:
+  #       condition: service_started
+
+volumes:
+  qdrant_data:
