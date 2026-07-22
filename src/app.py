@@ -10,31 +10,32 @@ from qdrant_client import QdrantClient
 # ==========================================
 # 1. INFRASTRUCTURE SETUP
 # ==========================================
-st.set_page_config(page_title="AegisAudit Medical", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="AegisAudit VoiceGuard", layout="wide", page_icon="🛡️")
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant_server:6333")
 qdrant = QdrantClient(url=QDRANT_URL)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 # ==========================================
-# 2. HELPER: THE "DUMB" BASELINE RAG (GROQ)
+# 2. HELPER: THE "DUMB" BASELINE RAG
 # ==========================================
 def run_baseline_rag(query: str) -> str:
     """A standard RAG implementation with NO guardrails. Designed to fail."""
     from fastembed import TextEmbedding
     embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-    qdrant = QdrantClient(url=QDRANT_URL)
+    qdrant_client = QdrantClient(url=QDRANT_URL)
     
     try:
         query_vector = list(embedding_model.embed([query]))[0]
-        hits = qdrant.search(
-            collection_name="medical_records",
-            query_vector=query_vector.tolist(),
+        response = qdrant_client.query_points(
+            collection_name="enterprise_records",
+            query=query_vector.tolist(),
             limit=3
         )
-        context = " ".join([hit.payload.get("parent_raw_text", "") for hit in hits])
+        context = " ".join([hit.payload.get("parent_raw_text", "") for hit in response.points])
     except Exception:
         context = "No documents ingested yet."
 
@@ -45,27 +46,39 @@ def run_baseline_rag(query: str) -> str:
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
-            {"role": "system", "content": "Answer the query based on the context."},
+            {"role": "system", "content": "You are a customer support agent. Answer the query based on the context."},
             {"role": "user", "content": f"Query: {query}\nContext: {context}"}
         ]
     }
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-    return response.json()['choices'][0]['message']['content']
+    
+    try:
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        resp_json = response.json()
+        
+        # THE FIX: Check if 'choices' exists before accessing it
+        if 'choices' in resp_json:
+            return resp_json['choices'][0]['message']['content']
+        else:
+            error_msg = resp_json.get('error', {}).get('message', 'Unknown API Error')
+            return f"⚠️ Baseline RAG Failed: {error_msg}"
+            
+    except Exception as e:
+        return f"⚠️ Connection Error: {str(e)}"
 
 # ==========================================
 # 3. UI LAYOUT & TABS
 # ==========================================
-st.title("🛡️ FailSafe-RAG: Voice AI Knowledge Guard")
+st.title("🛡️ AegisAudit VoiceGuard: OneInbox AI Integration")
 
-tab_production, tab_matrix = st.tabs(["Call Center Copilot", "Adversarial Matrix (Stress Test)"])
+tab_production, tab_matrix = st.tabs(["Call Center Copilot", "Adversarial Call Matrix (Stress Test)"])
 
 # ------------------------------------------
 # TAB 1: PRODUCTION INTERFACE
 # ------------------------------------------
 with tab_production:
-    st.markdown("Ensure Voice Agents never hallucinate refund policies or SLA terms mid-conversation.")
+    st.markdown("Ensure Voice Agents never hallucinate refund policies, enterprise SLAs, or billing data mid-conversation.")
     
-    uploaded_file = st.file_uploader("Upload Messy Knowledge Base (Scanned Policies, Handwritten Notes)", type=["pdf", "png", "jpg"])
+    uploaded_file = st.file_uploader("Upload Messy BPO Knowledge Base (Legacy SLAs, Handwritten Manager Notes, Invoices)", type=["pdf", "png", "jpg"])
     if uploaded_file is not None:
         file_path = os.path.join("./docs", uploaded_file.name)
         with open(file_path, "wb") as f:
@@ -73,7 +86,7 @@ with tab_production:
         redis_client.rpush("ingestion_tasks", json.dumps({"file_name": uploaded_file.name}))
         st.success(f"File '{uploaded_file.name}' pushed to Vision/OCR Ingestion Queue.")
 
-    query = st.text_input("Enter Voice Agent Context Query:")
+    query = st.text_input("Enter Voice Agent Query (Caller Context):")
     
     if st.button("Execute Safe Audit"):
         if not query:
@@ -86,7 +99,7 @@ with tab_production:
             pubsub.subscribe(f"audit_updates_{task_id}")
             
             final_answer = None
-            with st.spinner("Processing via LangGraph Path B..."):
+            with st.spinner("Processing via LangGraph VoiceGuard..."):
                 start_time = time.time()
                 while time.time() - start_time < 60: 
                     message = pubsub.get_message(ignore_subscribe_messages=True)
@@ -113,13 +126,14 @@ with tab_production:
 # TAB 2: LIVE HALLUCINATION MATRIX
 # ------------------------------------------
 with tab_matrix:
-    st.markdown("### Real-Time Architecture Evaluation")
-    st.write("Comparing standard RAG (Blind Trust) vs. FailSafe-RAG State Machine (Self-Correcting)")
+    st.markdown("### Real-Time Liability Evaluation for Voice AI")
+    st.write("Comparing standard RAG (Blind Trust) vs. VoiceGuard State Machine (Self-Correcting)")
     
-    trap_question = st.selectbox("Select a Golden Trap Question:", [
-        "According to the handwritten manager's note, is the customer eligible for a full refund after 45 days?",
-        "Does the updated SLA policy contradict the legacy downtime guarantees in the scanned table?",
-        "What is the exact penalty fee listed on the illegible customer invoice?"
+    trap_question = st.selectbox("Select an Enterprise Trap Question:", [
+        "According to the legacy SLA contract, what is the exact downtime penalty percentage for the Pro Tier?",
+        "Does the handwritten manager's note authorize a full refund, or just a 50% credit?",
+        "What is the exact total amount due, including tax, on the Acme Corp invoice?",
+        "What specific hardware SKU was billed on the third line item of the damaged invoice?"
     ])
     
     if st.button("Execute Side-by-Side Matrix"):
@@ -132,10 +146,10 @@ with tab_matrix:
                 baseline_answer = run_baseline_rag(trap_question)
                 latency = round(time.time() - start_time, 2)
                 st.write(f"**Answer:** {baseline_answer}")
-                st.caption(f"Latency: {latency}s | Evaluation: Blind Trust")
+                st.caption(f"Latency: {latency}s | Evaluation: High Liability (Blind Trust)")
                 
         with col2:
-            st.success("🛡️ FailSafe-RAG")
+            st.success("🛡️ VoiceGuard (AegisAudit)")
             task_id = str(uuid.uuid4())[:8]
             redis_client.rpush("audit_tasks", json.dumps({"task_id": task_id, "query": trap_question}))
             
@@ -160,8 +174,12 @@ with tab_matrix:
             latency = round(time.time() - start_time, 2)
             status_matrix.update(label="Loop Complete", state="complete", expanded=False)
             
-            if "SYSTEM WARNING" in final_answer:
-                st.error(f"**Answer:** {final_answer}")
+            # THE FIX: Ensure final_answer is not None before processing
+            if final_answer:
+                if "SYSTEM WARNING" in final_answer:
+                    st.error(f"**TTS Fallback Triggered:**\n\n{final_answer}")
+                else:
+                    st.write(f"**Verified Answer:** {final_answer}")
             else:
-                st.write(f"**Answer:** {final_answer}")
-            st.caption(f"Latency: {latency}s | Evaluation: Guardrails Active")
+                st.error("⚠️ Orchestrator Timeout: The backend crashed or took longer than 60 seconds.")
+            st.caption(f"Latency: {latency}s | Evaluation: Grounded & Voice-Safe")

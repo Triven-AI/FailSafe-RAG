@@ -17,23 +17,20 @@ from fastembed import TextEmbedding
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
-# Look for Qdrant across the Docker network, not localhost
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant_server:6333")
 
 print(f"Connecting to Qdrant at {QDRANT_URL}...")
 while True:
     try:
         qdrant = QdrantClient(url=QDRANT_URL)
-        # Actually ping the database to force a connection test
         qdrant.get_collections()
         print("✅ Successfully connected to Qdrant Server!")
         break
-    except Exception as e:
+    except Exception:
         print("⏳ Qdrant database starting up, retrying in 2 seconds...")
         time.sleep(2)
 
-
-COLLECTION_NAME = "medical_records"
+COLLECTION_NAME = "enterprise_records"
 
 if not qdrant.collection_exists(COLLECTION_NAME):
     qdrant.create_collection(
@@ -41,67 +38,95 @@ if not qdrant.collection_exists(COLLECTION_NAME):
         vectors_config=VectorParams(size=384, distance=Distance.COSINE),
     )
 
-print("Loading FastEmbed Dense Model (BAAI/bge-small-en-v1.5)...")
+print("Loading FastEmbed Dense Model...")
 embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 DOCS_DIR = os.environ.get("DOCS_DIR", "./docs")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-
-# ==========================================
-# 2. THE FORMAT ROUTER & LLM HELPERS
-# ==========================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-def generate_child_summary(raw_text: str) -> str:
-    """Uses Groq to summarize raw, messy text for clean vector search."""
+# ==========================================
+# 2. RATE-LIMIT SAFE LLM HELPERS
+# ==========================================
+def make_groq_request_with_retry(payload: dict, max_retries: int = 5) -> dict:
+    """Helper to handle Groq API calls with exponential backoff on Rate Limits (429)."""
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    
+    for attempt in range(max_retries):
+        response = requests.post(url, headers=headers, json=payload)
+        resp_json = response.json()
+        
+        if response.status_code == 200 and 'choices' in resp_json:
+            return resp_json
+        
+        # Check if rate limited
+        if 'error' in resp_json and resp_json['error'].get('code') == 'rate_limit_exceeded':
+            wait_time = (attempt + 1) * 5  # 5s, 10s, 15s...
+            print(f"  ⏳ Groq Rate Limit hit. Pausing {wait_time}s before retry (Attempt {attempt + 1}/{max_retries})...")
+            time.sleep(wait_time)
+        else:
+            print(f"  ⚠️ Groq API Error: {resp_json}")
+            time.sleep(3)
+            
+    raise Exception("Max retries exceeded for Groq API call.")
+
+def generate_child_summary(raw_text: str) -> str:
+    """Uses Groq to summarize enterprise contracts/invoices for clean vector search."""
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
-            {"role": "system", "content": "You are a data summarizer. Extract the core entities and key facts from this text into a clean 2-sentence summary. Do not omit numbers."},
+            {"role": "system", "content": "You are a BPO data summarizer. Extract core pricing tiers, SLA downtime penalties, and refund conditions into a clean 2-sentence summary. NEVER omit dollar amounts, dates, or percentages."},
             {"role": "user", "content": raw_text}
         ]
     }
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-    return response.json()['choices'][0]['message']['content']
+    try:
+        resp_json = make_groq_request_with_retry(payload)
+        return resp_json['choices'][0]['message']['content']
+    except Exception:
+        return raw_text[:200]  # Fallback to truncated raw text if all retries fail
 
 def vision_transcribe_handwriting(image_path: str) -> str:
-    """Uses Groq's Llama 3.2 Vision to transcribe terrible handwriting."""
+    """Uses Groq's Qwen Vision with dynamic image compression & rate-limit retries."""
     import base64
-    with open(image_path, "rb") as img_file:
-        base64_image = base64.b64encode(img_file.read()).decode('utf-8')
+    import io
+    
+    # Resize image to keep payload small
+    with Image.open(image_path) as img:
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        img.thumbnail((1024, 1024))
         
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+        buffered = io.BytesIO()
+        img.save(buffered, format="JPEG", quality=85)
+        base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        
     payload = {
-        "model": "llama-3.2-90b-vision-preview",
+        "model": "qwen/qwen3.6-27b",
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Transcribe this handwritten note exactly. Maintain any tabular structure. If a word is completely illegible, output [ILLEGIBLE]."},
+                    {"type": "text", "text": "Transcribe this handwritten note or scanned invoice exactly. Maintain any tabular structure. If a number or fee is completely illegible, output [ILLEGIBLE]."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                 ]
             }
         ]
     }
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-    return response.json()['choices'][0]['message']['content']
+    
+    resp_json = make_groq_request_with_retry(payload)
+    return resp_json['choices'][0]['message']['content']
 
 def determine_document_type(filepath: str) -> str:
-    """Basic Format Router heuristic."""
     ext = filepath.lower().split('.')[-1]
     if ext in ['jpg', 'jpeg', 'png']:
-        return "handwriting"
+        return "vision_scan"
     elif ext == 'pdf':
         doc = fitz.open(filepath)
         page = doc[0]
         if page.get_text():
-            return "clean_pdf"
+            return "clean_contract"
         return "scanned_pdf"
     return "unknown"
 
@@ -114,28 +139,26 @@ def process_document(filepath: str):
     raw_text = ""
 
     try:
-        if doc_type == "clean_pdf":
-            print("➡️ Route: PyMuPDF4LLM (Preserving Medical Tables)")
+        if doc_type == "clean_contract":
+            print("➡️ Route: PyMuPDF4LLM (Preserving SLA Tables)")
             raw_text = pymupdf4llm.to_markdown(filepath)
             
         elif doc_type == "scanned_pdf":
             print("➡️ Route: Tesseract OCR (Extracting Scanned Text)")
-            # Note: For hackathon simplicity, reading just the first page image
             doc = fitz.open(filepath)
             pix = doc[0].get_pixmap()
             pix.save("temp.png")
             raw_text = pytesseract.image_to_string(Image.open("temp.png"))
-            os.remove("temp.png")
+            if os.path.exists("temp.png"): os.remove("temp.png")
             
-        elif doc_type == "handwriting":
-            print("➡️ Route: Vision LLM (Transcribing Handwriting)")
+        elif doc_type == "vision_scan":
+            print("➡️ Route: Vision LLM (Invoices & Overrides)")
             raw_text = vision_transcribe_handwriting(filepath)
             
         else:
             print("❌ Error: Unsupported file format.")
             return False
 
-        # --- PARENT-CHILD EMBEDDING STRATEGY ---
         print("🧠 Generating Child Summary for Vectorization...")
         chunks = raw_text.split("\n\n")
         points = []
@@ -143,13 +166,9 @@ def process_document(filepath: str):
 
         for chunk in chunks:
             if len(chunk.strip()) > 30:
-                # 1. Generate the clean summary (The Child)
                 child_summary = generate_child_summary(chunk)
-                
-                # 2. Embed the summary for high-accuracy search
                 vector = list(embedding_model.embed([child_summary]))[0]
                 
-                # 3. Store the RAW messy text (The Parent) in the payload for the generator
                 points.append(
                     PointStruct(
                         id=point_id,
@@ -163,6 +182,7 @@ def process_document(filepath: str):
                     )
                 )
                 point_id += 1
+                time.sleep(0.5)  # Slight delay between chunks to prevent burst limit
 
         if points:
             qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
@@ -177,13 +197,14 @@ def process_document(filepath: str):
 # 4. BACKGROUND WORKER LOOP
 # ==========================================
 def run_worker():
-    print("\n🛡️ AegisAudit (Medical) Ingestion Worker Started.")
+    print("\n🛡️ AegisAudit (Enterprise) Ingestion Worker Started.")
     
     if os.path.exists(DOCS_DIR):
         for filename in os.listdir(DOCS_DIR):
             file_path = os.path.join(DOCS_DIR, filename)
             if os.path.isfile(file_path) and not filename.startswith('.'):
                 process_document(file_path)
+                time.sleep(2)  # 2s cooldown between files to respect 8k TPM limit
                 
     print("\n🎧 Listening to Redis queue 'ingestion_tasks' for new files...")
     while True:

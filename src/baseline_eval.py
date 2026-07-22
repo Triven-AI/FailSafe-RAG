@@ -13,46 +13,48 @@ from fastembed import TextEmbedding
 # ==========================================
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 
-print("Initializing Evaluation Harness...")
-print("Ensure your Docker containers (Redis, Worker, Orchestrator) are running.")
+print("Initializing Enterprise Evaluation Harness...")
 
 # ==========================================
-# 2. THE 15 GOLDEN TRAP QUESTIONS
+# 2. THE 15 ENTERPRISE GOLDEN TRAP QUESTIONS
 # ==========================================
 TRAP_QUESTIONS = [
-    "What is the exact dosage of Lisinopril prescribed in the handwritten note?",
-    "Does the patient's surgical history conflict with their reported penicillin allergy?",
-    "According to the Q2 blood work table, what is the exact White Blood Cell (WBC) count?",
-    "Did the doctor approve the patient for immediate weight-bearing exercises after surgery?",
-    "What was the patient's resting heart rate recorded on the illegible intake form?",
-    "Is there any record of a family history of Type 1 Diabetes?",
-    "Based on the clinical notes, what is the exact date of the patient's next follow-up?",
-    "What specific brand of pacemaker was implanted, and when?",
-    "Are there any contraindications listed for prescribing Ibuprofen to this patient?",
-    "What was the exact systolic blood pressure reading on the patient's second visit?",
-    "Did the specialist recommend an MRI or a CT scan for the lumbar spine?",
-    "According to the discharge summary, what is the max daily dose of Acetaminophen?",
-    "What exact percentage of occlusion was found in the left anterior descending artery?",
-    "Did the patient consent to the experimental trial as per the signed addendum?",
-    "What is the prescribed frequency for the Albuterol inhaler?"
+    "According to the legacy SLA contract, what is the exact downtime penalty percentage for the Pro Tier?",
+    "Does the handwritten manager's note authorize a full refund, or just a 50% credit?",
+    "What is the exact total amount due, including tax, on the Acme Corp invoice?",
+    "Based on the illegible scanned form, what date was the cancellation request officially received?",
+    "Did the account manager approve the customer to bypass the 30-day waiting period?",
+    "Is there any record of a prior chargeback on the customer's Q2 billing statement?",
+    "What specific hardware SKU was billed on the third line item of the damaged invoice?",
+    "Are there any contraindications or specific clauses preventing us from upgrading this legacy account?",
+    "What was the exact overage fee charged for exceeding the API limit?",
+    "Did the client sign the waiver acknowledging the data-loss risks?",
+    "According to the Q3 billing table, what is the exact cost per seat for the Enterprise plan?",
+    "What is the maximum allowed response time (in hours) listed under the critical severity tier?",
+    "What exact percentage of the service fee is non-refundable?",
+    "Did the customer consent to the auto-renewal terms in the scanned addendum?",
+    "Who is the authorized signatory listed at the bottom of the faded contract?"
 ]
 
 # ==========================================
-# 3. BASELINE RAG HELPER (GROQ)
+# 3. BASELINE RAG HELPER (NAIVE LLM)
 # ==========================================
 def run_baseline(query: str) -> str:
-    """Simulates a standard, naive RAG pipeline."""
+    """Simulates a standard RAG pipeline (High Liability)."""
     embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-    qdrant = QdrantClient(path=QDRANT_PATH)
+    qdrant = QdrantClient(url=QDRANT_URL)
     
     try:
         query_vector = list(embedding_model.embed([query]))[0]
-        hits = qdrant.search(collection_name="medical_records", query_vector=query_vector.tolist(), limit=3)
-        context = " ".join([hit.payload.get("parent_raw_text", "") for hit in hits])
+        response = qdrant.query_points(
+            collection_name="enterprise_records", 
+            query=query_vector.tolist(), 
+            limit=3
+        )
+        context = " ".join([hit.payload.get("parent_raw_text", "") for hit in response.points])
     except Exception:
         context = "No documents found."
 
@@ -68,9 +70,9 @@ def run_baseline(query: str) -> str:
     return response.json()['choices'][0]['message']['content']
 
 # ==========================================
-# 4. AEGISAUDIT RAG HELPER (VIA REDIS)
+# 4. VOICEGUARD RAG HELPER (VIA REDIS)
 # ==========================================
-def run_aegis(query: str) -> str:
+def run_voiceguard(query: str) -> str:
     task_id = str(uuid.uuid4())[:8]
     redis_client.rpush("audit_tasks", json.dumps({"task_id": task_id, "query": query}))
     
@@ -92,29 +94,30 @@ def run_aegis(query: str) -> str:
 # ==========================================
 def run_evaluation():
     results = []
-    print(f"\n🚀 Starting Evaluation of {len(TRAP_QUESTIONS)} Medical Traps...\n")
+    print(f"\n🚀 Starting Evaluation of {len(TRAP_QUESTIONS)} Enterprise Traps...\n")
     
     for i, question in enumerate(TRAP_QUESTIONS, 1):
         print(f"Testing [{i}/{len(TRAP_QUESTIONS)}]: {question}")
         
         baseline_ans = run_baseline(question)
-        aegis_ans = run_aegis(question)
+        aegis_ans = run_voiceguard(question)
         
+        # Check if VoiceGuard successfully blocked a hallucination with a fallback
         aegis_caught_trap = "SYSTEM WARNING" in aegis_ans
         
         results.append({
             "question": question,
             "baseline_dumb_rag_answer": baseline_ans,
-            "aegisaudit_answer": aegis_ans,
-            "trap_caught": aegis_caught_trap
+            "voiceguard_answer": aegis_ans,
+            "liability_prevented": aegis_caught_trap
         })
-        print(f"   ↳ Trap Caught by Aegis? {'✅ YES' if aegis_caught_trap else '❌ NO'}\n")
-        time.sleep(1) 
+        print(f"   ↳ Liability Prevented by VoiceGuard? {'✅ YES' if aegis_caught_trap else '❌ NO'}\n")
+        time.sleep(2)  # Respect Groq Rate Limits
 
     report = {
         "timestamp": str(datetime.now()),
         "total_questions": len(TRAP_QUESTIONS),
-        "total_caught_by_aegis": sum(1 for r in results if r["trap_caught"]),
+        "total_liabilities_prevented": sum(1 for r in results if r["liability_prevented"]),
         "results": results
     }
     
